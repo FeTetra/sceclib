@@ -1,0 +1,20 @@
+# IDE
+compile_commands.json
+.cache
+
+# SCE Files
+*.BIN
+
+# scetool Files
+scetool
+data/
+
+# Keys
+test_keys.h
+
+# Build files
+a.out
+
+# OS Files
+.DS_Store
+a.out.dSYM
