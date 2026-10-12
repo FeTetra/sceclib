@@ -10,42 +10,17 @@
 #include "buffer/io_buf.h"
 #include "buffer/endian.h"
 
+#include "global_defs.h"
+#include "scetypes.h"
+
 #include "hexdump.h"
+#include "scetypes_print.h"
 #include "test_keys.h" // Bring your own, its a uint8_t array
 
-#define SELF_HDR_SIZE 0x20
-#define ENC_ROOT_HDR_SIZE 0x40
-#define CERTIFICATION_HDR_SIZE 0x20
-
-typedef uint8_t u8;
-typedef uint16_t u16;
-typedef uint32_t u32;
-typedef uint64_t u64;
-
-typedef struct SELFHeader {
-    u32 magic;
-    u32 cf_version;
-    u16 attribute;
-    u16 category;
-    u32 ext_hdr_size;
-    u64 file_offset;
-    u64 file_size;
-    u64 cf_file_size; // For cf version 3
-    // Pad 8 bytes after
-} SELFHeader;
-
-typedef struct ExtendedHeader {
-  u64 ext_hdr_version;
-  u64 program_identification_hdr_offset;
-  u64 ehdr_offset;
-  u64 phdr_offset;
-  u64 shdr_offset;
-  u64 segment_ext_hdr_offset;
-  u64 version_hdr_offset;
-  u64 supplemental_hdr_offset;
-  u64 supplemental_hdr_size;
-  // Pad 8 bytes after
-} ExtendedHeader;
+typedef struct EncryptionContext {
+    EVP_CIPHER_CTX *cipher_ctx;
+    int total;
+} EncryptionContext;
 
 ExtendedHeader ExtendedHeader_read(IoBuf *r) {
     ExtendedHeader result;
@@ -62,36 +37,6 @@ ExtendedHeader ExtendedHeader_read(IoBuf *r) {
     IoBuf_seek_from_cur(r, 8);
 
     return result;
-}
-
-typedef struct ProgramIdentificationHeader {
-    u64 program_authority_id;
-    u32 program_vendor_id;
-    u32 program_type;
-    u64 program_sceversion;
-}ProgramIdentificationHeader;
-
-typedef struct EncryptionRootHeader {
-    u8 key[0x10];
-    u8 key_pad[0x10];
-    u8 iv[0x10];
-    u8 iv_pad[0x10];
-} EncryptionRootHeader;
-
-typedef struct CertificationHeader {
-    u64 sign_offset;
-    u32 sign_algorithm;
-    u32 cert_entry_num;
-    u32 attr_entry_num;
-    u32 optional_hdr_size;
-    // Pad 8 bytes after
-} CertificationHeader;
-
-void EncryptionRootHeader_print(EncryptionRootHeader *erh) {
-    printf("ERH Key: ");
-    PrintHexLines(erh->key, 0x10, 16, 1);
-    printf("ERH IV: ");
-    PrintHexLines(erh->iv, 0x10, 16, 1);
 }
 
 SELFHeader SELFHeader_read(IoBuf *r) {
@@ -112,101 +57,109 @@ SELFHeader SELFHeader_read(IoBuf *r) {
     return result;
 }
 
-void CertificationHeader_print(CertificationHeader *h) {
-    printf("Sign offset: %#llx\n", h->sign_offset);
-    printf("Sign algorithm: %d\n", h->sign_algorithm);
-    printf("Cert entry number: %d\n", h->cert_entry_num);
-    printf("Attr entry number: %d\n", h->attr_entry_num);
-    printf("Optional header size: %d\n", h->optional_hdr_size);
-}
+EncryptionContext *NewEncryptionContext(const void *cipher, void *key, void *iv) {
+    EncryptionContext *result = malloc(sizeof(EncryptionContext));
 
-void SELFHeader_print(SELFHeader *h) {
-    printf("Magic: %#x\n", h->magic);
-    printf("Version: %#x\n", h->cf_version);
-    printf("Attribute: %#x\n", h->attribute);
-    printf("Category: %#x\n", h->category);
-    printf("Encryption Root Header Offset: %#x\n", h->ext_hdr_size);
-    printf("File offset: %#llx\n", h->file_offset);
-    printf("File size: %#llx\n", h->file_size);
-}
-
-int DecryptRaw(void *in, void *out, size_t size, const void *cipher, void *key, void *iv) {
     EVP_CIPHER_CTX *ctx = EVP_CIPHER_CTX_new();
 
     if (!ctx) {
         printf("Failed to initialize EVP cipher context\n");
-        return 0;
+        return NULL;
     }
 
     if (EVP_DecryptInit_ex(ctx, cipher, NULL, key, iv) != 1) {
         printf("Failed to initialize EVP decryption\n");
         ERR_print_errors_fp(stderr);
         EVP_CIPHER_CTX_free(ctx);
-        return 0;
+        return NULL;
     }
     EVP_CIPHER_CTX_set_padding(ctx, 0);
 
-    int len;
-    int total = 0;
-
-    if (EVP_DecryptUpdate(ctx, out, &len, in, size) != 1) {
-        printf("Failed to decrypt data\n");
-        ERR_print_errors_fp(stderr);
-        EVP_CIPHER_CTX_free(ctx);
-        return 0;
-    }
-
-    total += len;
-
-    if (EVP_DecryptFinal(ctx, out + total, &len) != 1) {
-        printf("Failed to finalize EVP decryption\n");
-        ERR_print_errors_fp(stderr);
-        EVP_CIPHER_CTX_free(ctx);
-        return 0;
-    }
-
-    EVP_CIPHER_CTX_free(ctx);
-    return 1;
-}
-
-EncryptionRootHeader EncryptionRootHeader_Read_Decrypt(IoBuf *r) {
-    EncryptionRootHeader result;
-
-    u8 ciphertext[ENC_ROOT_HDR_SIZE];
-    u8 plaintext[ENC_ROOT_HDR_SIZE];
-
-    IoBuf_read_size(r, ciphertext, ENC_ROOT_HDR_SIZE);
-
-    DecryptRaw(ciphertext, plaintext, ENC_ROOT_HDR_SIZE, EVP_aes_256_cbc(), (void *)test_key, (void *)test_riv);
-
-    memcpy(result.key, plaintext, 0x10);
-    memcpy(result.key_pad, plaintext + 0x10, 0x10);
-    memcpy(result.iv, plaintext + 0x20, 0x10);
-    memcpy(result.iv_pad, plaintext + 0x30, 0x10);
+    result->cipher_ctx = ctx;
+    result->total = 0;
 
     return result;
 }
 
-CertificationHeader CertificationHeader_read(IoBuf *r, EncryptionRootHeader *h) {
+int FinalizeEncryptionContext(IoBuf *r, EncryptionContext *ctx) {
+    int len = 0;
+    if (EVP_DecryptFinal(ctx->cipher_ctx, r->buf->data + ctx->total, &len) != 1) { // bad idea
+        printf("Failed to finalize EVP decryption\n");
+        ERR_print_errors_fp(stderr);
+        EVP_CIPHER_CTX_free(ctx->cipher_ctx);
+        return 0;
+    }
+
+    EVP_CIPHER_CTX_free(ctx->cipher_ctx);
+    memset(ctx, 0, sizeof(EncryptionContext));
+    free(ctx);
+
+    return 1;
+}
+
+int DecryptToIoBuf(IoBuf *r, IoBuf *w, size_t size, EncryptionContext *ctx) {
+    u8 *ciphertext = malloc(size);
+    u8 *plaintext = malloc(size);
+    IoBuf_read_size(r, ciphertext, size);
+
+    int len = 0;
+    if (EVP_DecryptUpdate(ctx->cipher_ctx, plaintext, &len, ciphertext, size) != 1) {
+        printf("Failed to decrypt data\n");
+        ERR_print_errors_fp(stderr);
+        EVP_CIPHER_CTX_free(ctx->cipher_ctx);
+        return 0;
+    }
+
+    ctx->total += len;
+
+    // I could techinically write to w->buf->data directly and skip this copy, but safety or whatever
+    IoBuf_write_size(w, plaintext, size);
+    IoBuf_seek_from_cur(w, -size);
+    free(plaintext);
+    free(ciphertext);
+
+    return 1;
+}
+
+EncryptionRootHeader EncryptionRootHeader_read(IoBuf *r) {
+    EncryptionRootHeader result;
+
+    IoBuf_read_size(r, result.key, 0x10);
+    IoBuf_read_size(r, result.key_pad, 0x10);
+    IoBuf_read_size(r, result.iv, 0x10);
+    IoBuf_read_size(r, result.iv_pad, 0x10);
+
+    return result;
+}
+
+CertificationHeader CertificationHeader_read(IoBuf *r) {
     CertificationHeader result;
 
-    u8 ciphertext[CERTIFICATION_HDR_SIZE];
-    u8 plaintext[CERTIFICATION_HDR_SIZE];
+    IoBuf_read_u64(r, &result.sign_offset);
+    IoBuf_read_u32(r, &result.sign_algorithm);
+    IoBuf_read_u32(r, &result.cert_entry_num);
+    IoBuf_read_u32(r, &result.attr_entry_num);
+    IoBuf_read_u32(r, &result.optional_hdr_size);
+    IoBuf_seek_from_cur(r, sizeof(u64));
 
-    IoBuf_read_size(r, ciphertext, CERTIFICATION_HDR_SIZE);
+    return result;
+}
 
-    DecryptRaw(ciphertext, plaintext, CERTIFICATION_HDR_SIZE, EVP_aes_128_ctr(), h->key, h->iv);
 
-    IoBuf *w = IoBuf_ctor(CERTIFICATION_HDR_SIZE, Big, Writer);
-    IoBuf_write_size(w, plaintext, CERTIFICATION_HDR_SIZE);
-    IoBuf_seek_to(w, 0);
 
-    IoBuf_read_u64(w, &result.sign_offset);
-    IoBuf_read_u32(w, &result.sign_algorithm);
-    IoBuf_read_u32(w, &result.cert_entry_num);
-    IoBuf_read_u32(w, &result.attr_entry_num);
-    IoBuf_read_u32(w, &result.optional_hdr_size);
-    IoBuf_seek_from_cur(w, sizeof(u64));
+SegmentCertificationHeader SegmentCertificationHeader_read(IoBuf *r) {
+    SegmentCertificationHeader result;
+
+    IoBuf_read_u64(r, &result.segment_offset);
+    IoBuf_read_u64(r, &result.segment_size);
+    IoBuf_read_u32(r, &result.segment_type);
+    IoBuf_read_u32(r, &result.segment_id);
+    IoBuf_read_u32(r, &result.sign_algorithm);
+    IoBuf_read_u32(r, &result.sign_idx);
+    IoBuf_read_u32(r, &result.enc_algorithm);
+    IoBuf_read_u32(r, &result.key_idx);
+    IoBuf_read_u32(r, &result.iv_idx);
+    IoBuf_read_u32(r, &result.comp_algorithm);
 
     return result;
 }
@@ -227,22 +180,48 @@ int main() {
 
     fread(file_buf->buf->data, 1, input_size, fp);
 
-    SELFHeader self_hdr = SELFHeader_read(file_buf);
+    printf("\n_________\n\n Certified File Header \n_________\n\n");
 
+    SELFHeader self_hdr = SELFHeader_read(file_buf);
     SELFHeader_print(&self_hdr);
 
     size_t enc_root_hdr_offset = SELF_HDR_SIZE + self_hdr.ext_hdr_size;
     size_t certification_hdr_offset = enc_root_hdr_offset + ENC_ROOT_HDR_SIZE;
+    size_t segment_certification_hdr_offset = certification_hdr_offset + CERTIFICATION_HDR_SIZE;
 
     IoBuf_seek_to(file_buf, enc_root_hdr_offset);
 
-    EncryptionRootHeader erh = EncryptionRootHeader_Read_Decrypt(file_buf);
+    printf("\n_________\n\n Encryption Root Header \n_________\n\n");
 
+    EncryptionContext *erh_enc_ctx = NewEncryptionContext(EVP_aes_256_cbc(), (void *)test_key, (void *)test_riv);
+    IoBuf *erh_plaintext = IoBuf_ctor(ENC_ROOT_HDR_SIZE, Big, Writer);
+    DecryptToIoBuf(file_buf, erh_plaintext, ENC_ROOT_HDR_SIZE, erh_enc_ctx);
+    FinalizeEncryptionContext(erh_plaintext, erh_enc_ctx);
+    EncryptionRootHeader erh = EncryptionRootHeader_read(erh_plaintext);
+    IoBuf_dtor(erh_plaintext);
     EncryptionRootHeader_print(&erh);
+
+    printf("\n_________\n\n Certification Headers \n_________\n\n");
 
     IoBuf_seek_to(file_buf, certification_hdr_offset);
 
-    CertificationHeader ch = CertificationHeader_read(file_buf, &erh);
+    EncryptionContext *cert_enc_ctx = NewEncryptionContext( EVP_aes_128_ctr(), erh.key, erh.iv);
+    IoBuf *cert_plaintext = IoBuf_ctor(CERTIFICATION_HDR_SIZE, Big, Writer);
 
+    DecryptToIoBuf(file_buf, cert_plaintext, CERTIFICATION_HDR_SIZE, cert_enc_ctx);
+    CertificationHeader ch = CertificationHeader_read(cert_plaintext);
+    IoBuf_dtor(cert_plaintext);
     CertificationHeader_print(&ch);
+
+    printf("\n_________\n\n Segment Certification Headers \n_________\n\n");
+
+    // Might wanna do this differently to spend less time on reallocation
+    cert_plaintext = IoBuf_ctor(SEGMENT_CERTIFICATION_HDR_SIZE * ch.cert_entry_num, Big, Writer);
+    DecryptToIoBuf(file_buf, cert_plaintext, SEGMENT_CERTIFICATION_HDR_SIZE * ch.cert_entry_num, cert_enc_ctx);
+    for (int i = 0; i < ch.cert_entry_num; i++) {
+        printf("Header %d:\n", i);
+        SegmentCertificationHeader sch = SegmentCertificationHeader_read(cert_plaintext);
+        SegmentCertificationHeader_print(&sch);
+        printf("\n");
+    }
 }
