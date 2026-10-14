@@ -5,6 +5,12 @@
 
 #include "global_defs.h"
 
+#define SELF_HDR_SIZE 0x20
+#define ENC_ROOT_HDR_SIZE 0x40
+#define CERTIFICATION_HDR_SIZE 0x20
+#define SEGMENT_CERTIFICATION_HDR_SIZE 0x30
+#define CERTIFICATION_ATTRIBUTE_HDR_SIZE 0x80
+
 typedef struct SELFHeader {
     u32 magic;
     u32 cf_version;
@@ -65,5 +71,12 @@ typedef struct SegmentCertificationHeader {
 	u32 iv_idx;
 	u32 comp_algorithm;
 } SegmentCertificationHeader;
+
+typedef struct CertificationAttributeHeader {
+    u8 signature[0x20];
+    u8 sign_key[0x40];
+    u8 key[0x10];
+    u8 iv[0x10];
+} CertificationAttributeHeader;
 
 #endif // SCETYPES_H

@@ -18,7 +18,7 @@
 #include "test_keys.h" // Bring your own, its a uint8_t array
 
 typedef struct EncryptionContext {
-    EVP_CIPHER_CTX *cipher_ctx;
+    void *cipher_ctx;
     int total;
 } EncryptionContext;
 
@@ -145,8 +145,6 @@ CertificationHeader CertificationHeader_read(IoBuf *r) {
     return result;
 }
 
-
-
 SegmentCertificationHeader SegmentCertificationHeader_read(IoBuf *r) {
     SegmentCertificationHeader result;
 
@@ -160,6 +158,17 @@ SegmentCertificationHeader SegmentCertificationHeader_read(IoBuf *r) {
     IoBuf_read_u32(r, &result.key_idx);
     IoBuf_read_u32(r, &result.iv_idx);
     IoBuf_read_u32(r, &result.comp_algorithm);
+
+    return result;
+}
+
+CertificationAttributeHeader CertificationAttributeHeader_read(IoBuf *r) {
+    CertificationAttributeHeader result;
+
+    IoBuf_read_size(r, result.signature, 0x20);
+    IoBuf_read_size(r, result.sign_key, 0x40);
+    IoBuf_read_size(r, result.key, 0x10);
+    IoBuf_read_size(r, result.iv, 0x10);
 
     return result;
 }
@@ -206,22 +215,28 @@ int main() {
     IoBuf_seek_to(file_buf, certification_hdr_offset);
 
     EncryptionContext *cert_enc_ctx = NewEncryptionContext( EVP_aes_128_ctr(), erh.key, erh.iv);
-    IoBuf *cert_plaintext = IoBuf_ctor(CERTIFICATION_HDR_SIZE, Big, Writer);
 
-    DecryptToIoBuf(file_buf, cert_plaintext, CERTIFICATION_HDR_SIZE, cert_enc_ctx);
+    size_t cert_size = self_hdr.file_offset - (SELF_HDR_SIZE + self_hdr.ext_hdr_size + ENC_ROOT_HDR_SIZE);
+    IoBuf *cert_plaintext = IoBuf_ctor(cert_size, Big, Writer);
+    DecryptToIoBuf(file_buf, cert_plaintext, cert_size, cert_enc_ctx);
+
     CertificationHeader ch = CertificationHeader_read(cert_plaintext);
-    IoBuf_dtor(cert_plaintext);
     CertificationHeader_print(&ch);
 
     printf("\n_________\n\n Segment Certification Headers \n_________\n\n");
-
-    // Might wanna do this differently to spend less time on reallocation
-    cert_plaintext = IoBuf_ctor(SEGMENT_CERTIFICATION_HDR_SIZE * ch.cert_entry_num, Big, Writer);
-    DecryptToIoBuf(file_buf, cert_plaintext, SEGMENT_CERTIFICATION_HDR_SIZE * ch.cert_entry_num, cert_enc_ctx);
+    
+    SegmentCertificationHeader *schs = malloc(SEGMENT_CERTIFICATION_HDR_SIZE * ch.cert_entry_num);
     for (int i = 0; i < ch.cert_entry_num; i++) {
         printf("Header %d:\n", i);
-        SegmentCertificationHeader sch = SegmentCertificationHeader_read(cert_plaintext);
-        SegmentCertificationHeader_print(&sch);
+        schs[i] = SegmentCertificationHeader_read(cert_plaintext);
+        SegmentCertificationHeader_print(&schs[i]);
         printf("\n");
     }
+    IoBuf_dtor(cert_plaintext);
+    
+    printf("\n_________\n\n Certification Segments \n_________\n\n");
+
+    // TODO: Decrypt/Decompress and read all certification segments
+
+    free(schs);
 }

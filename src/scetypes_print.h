@@ -48,4 +48,15 @@ static void SegmentCertificationHeader_print(SegmentCertificationHeader *h) {
     printf("Comp algorithm: %d\n", h->comp_algorithm);
 }
 
+static void CertificationAttributeHeader_print(CertificationAttributeHeader *h) {
+    printf("Signature: \n");
+    PrintHexLines(h->signature, 0x40, 16, 4);
+    printf("Sign key: \n");
+    PrintHexLines(h->sign_key, 0x20, 16, 4);
+    printf("Key: \n");
+    PrintHexLines(h->key, 0x10, 16, 4);
+    printf("IV: \n");
+    PrintHexLines(h->iv, 0x10, 16, 4);
+}
+
 #endif // SCETYPES_PRINT_H
