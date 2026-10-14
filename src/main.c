@@ -6,6 +6,7 @@
 
 #include <openssl/evp.h>
 #include <openssl/err.h>
+#include <zlib.h>
 
 #include "buffer/io_buf.h"
 #include "buffer/endian.h"
@@ -121,6 +122,9 @@ int DecryptToIoBuf(IoBuf *r, IoBuf *w, size_t size, EncryptionContext *ctx) {
     return 1;
 }
 
+//int DecompressToIoBuf(IoBuf *r, IoBuf *w, size_t size) {
+//}
+
 EncryptionRootHeader EncryptionRootHeader_read(IoBuf *r) {
     EncryptionRootHeader result;
 
@@ -162,15 +166,48 @@ SegmentCertificationHeader SegmentCertificationHeader_read(IoBuf *r) {
     return result;
 }
 
-CertificationAttributeHeader CertificationAttributeHeader_read(IoBuf *r) {
+CertificationAttributeHeader CertificationAttributeHeader_read(IoBuf *r, SegmentCertificationHeader *h) {
     CertificationAttributeHeader result;
 
-    IoBuf_read_size(r, result.signature, 0x20);
-    IoBuf_read_size(r, result.sign_key, 0x40);
-    IoBuf_read_size(r, result.key, 0x10);
-    IoBuf_read_size(r, result.iv, 0x10);
+    if (h->sign_algorithm == 2) {
+        IoBuf_read_size(r, result.signature, 0x20);
+        IoBuf_read_size(r, result.sign_key, 0x40);
+    }
+    if (h->sign_algorithm == 3) {
+        IoBuf_read_size(r, result.signature, 0x20);
+    }
+    if (h->sign_algorithm == 6) {
+        IoBuf_read_size(r, result.signature, 0x20);
+        IoBuf_read_size(r, result.sign_key, 0x20);
+    }
+    
+    if (h->enc_algorithm == 3) {
+        IoBuf_read_size(r, result.key, 0x10);
+        IoBuf_read_size(r, result.iv, 0x10);
+    }
 
     return result;
+}
+
+int WriteIoBufToFile(IoBuf *r, char *file_name) {
+    FILE *fp = fopen(file_name, "wb");
+    if (fp == NULL) {
+        printf("Failed to open file\n");
+        return 0;
+    }
+
+    size_t written = fwrite(r->buf->data, 1, r->buf->size, fp);
+    if (written != r->buf->size) {
+        printf("Size written did not match buffer size\n");
+        return 0;
+    }
+
+    if (fclose(fp) != 0) {
+        printf("Failed to close file\n");
+        return 0;
+    }
+
+    return 1;
 }
 
 int main() {
@@ -188,6 +225,7 @@ int main() {
     IoBuf *file_buf = IoBuf_ctor(input_size, Big, Reader);
 
     fread(file_buf->buf->data, 1, input_size, fp);
+    fclose(fp);
 
     printf("\n_________\n\n Certified File Header \n_________\n\n");
 
@@ -220,6 +258,8 @@ int main() {
     IoBuf *cert_plaintext = IoBuf_ctor(cert_size, Big, Writer);
     DecryptToIoBuf(file_buf, cert_plaintext, cert_size, cert_enc_ctx);
 
+    WriteIoBufToFile(cert_plaintext, "cert_plaintext");
+
     CertificationHeader ch = CertificationHeader_read(cert_plaintext);
     CertificationHeader_print(&ch);
 
@@ -232,11 +272,41 @@ int main() {
         SegmentCertificationHeader_print(&schs[i]);
         printf("\n");
     }
-    IoBuf_dtor(cert_plaintext);
     
     printf("\n_________\n\n Certification Segments \n_________\n\n");
 
-    // TODO: Decrypt/Decompress and read all certification segments
+    // TODO: Decrypt and/or decompress all certification segments
+
+    u8 attribute_key[0x10];
+    u8 attribute_iv[0x10];
+    size_t certification_attributes_offset = 0x170;
+    
+    for (int i = 0; i < ch.cert_entry_num; i++) {
+        IoBuf *segment_plaintext = IoBuf_ctor(schs[i].segment_size, Big, Writer);
+
+        IoBuf_seek_to(file_buf, schs[i].segment_offset);
+
+        char file_name[0x10];
+        snprintf(file_name, 0x10, "schs[%d]", i);
+
+        if (schs[i].enc_algorithm == 3) {
+            IoBuf_seek_to(cert_plaintext, certification_attributes_offset + (0x10 * schs[i].key_idx));
+            IoBuf_read_size(cert_plaintext, attribute_key, 0x10);
+            IoBuf_read_size(cert_plaintext, attribute_iv, 0x10);
+            EncryptionContext *segment_enc_ctx = NewEncryptionContext(
+                EVP_aes_128_ctr(), attribute_key, attribute_iv);
+            DecryptToIoBuf(file_buf, segment_plaintext, schs[i].segment_size, segment_enc_ctx);
+            FinalizeEncryptionContext(segment_plaintext, segment_enc_ctx);
+        } else if (schs[i].enc_algorithm == 1) {
+            IoBuf_copy_size(segment_plaintext, file_buf, schs[i].segment_size);
+        }
+
+        WriteIoBufToFile(segment_plaintext, file_name);
+
+        IoBuf_dtor(segment_plaintext); // ew
+    }
+
+    IoBuf_dtor(cert_plaintext);
 
     free(schs);
 }

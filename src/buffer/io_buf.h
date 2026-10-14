@@ -48,4 +48,7 @@ int IoBuf_write_u64(IoBuf *self, uint64_t in);
 int IoBuf_write_from_buf(IoBuf *self, Buf *in);
 int IoBuf_write_size_from_buf(IoBuf *self, Buf *in, size_t size);
 
+int IoBuf_copy_size(IoBuf *self, IoBuf *in, size_t size);
+int IoBuf_copy_entire(IoBuf *self, IoBuf *in);
+
 #endif // IO_BUF_H

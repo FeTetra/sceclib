@@ -144,3 +144,19 @@ int IoBuf_pad(IoBuf *self, size_t count) {
     }
     return 0;
 }
+
+int IoBuf_copy_size(IoBuf *self, IoBuf *in, size_t size) {
+    if (IoBuf_has_remaining(self, size) && IoBuf_ensure_remaining(in, size)) {
+        memcpy(self->buf->data + self->pos, in->buf->data + in->pos, size);
+        return 1;
+    }
+    return 0;
+}
+
+int IoBuf_copy_entire(IoBuf *self, IoBuf *in) {
+    if (IoBuf_ensure_remaining(self, in->buf->size)) {
+        memcpy(self->buf->data, in->buf->data, in->buf->size);
+        return 1;
+    }
+    return 0;
+}
