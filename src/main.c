@@ -18,6 +18,8 @@
 #include "scetypes_print.h"
 #include "test_keys.h" // Bring your own, its a uint8_t array
 
+#define ZLIB_CHUNK_SIZE 2048
+
 typedef struct EncryptionContext {
     void *cipher_ctx;
     int total;
@@ -122,8 +124,55 @@ int DecryptToIoBuf(IoBuf *r, IoBuf *w, size_t size, EncryptionContext *ctx) {
     return 1;
 }
 
-//int DecompressToIoBuf(IoBuf *r, IoBuf *w, size_t size) {
-//}
+int DecompressToIoBuf(IoBuf *r, IoBuf *w) {
+    u8 in[ZLIB_CHUNK_SIZE];
+    u8 out[ZLIB_CHUNK_SIZE];
+
+    z_stream stream = {0};
+
+    int result = inflateInit(&stream);
+    if (result != Z_OK) {
+        printf("Failed to initialize decompression.\n");
+        return 0;
+    }
+
+    int success = 0;
+
+    while (1) {
+        if (stream.avail_in == 0) {
+            u32 remaining = r->buf->size - r->pos;
+            if (remaining == 0) {
+                break;
+            }
+
+            u32 amount = remaining < ZLIB_CHUNK_SIZE ? remaining : ZLIB_CHUNK_SIZE;
+            stream.next_in = in;
+            stream.avail_in = amount;
+            IoBuf_read_size(r, in, amount);
+        }
+
+        stream.next_out = out;
+        stream.avail_out = ZLIB_CHUNK_SIZE;
+
+        result = inflate(&stream, Z_NO_FLUSH);
+
+        u32 nbytes = ZLIB_CHUNK_SIZE - stream.avail_out;
+        if (nbytes > 0) {
+            IoBuf_write_size(w, out, nbytes);
+        }
+
+        if (result == Z_STREAM_END) {
+            success = 1;
+            break;
+        } else if (result != Z_OK) {
+            printf("Failed to decompress chunk %d\n", result);
+            break;
+        }
+    }
+
+    inflateEnd(&stream);
+    return success;
+}
 
 EncryptionRootHeader EncryptionRootHeader_read(IoBuf *r) {
     EncryptionRootHeader result;
@@ -258,8 +307,6 @@ int main() {
     IoBuf *cert_plaintext = IoBuf_ctor(cert_size, Big, Writer);
     DecryptToIoBuf(file_buf, cert_plaintext, cert_size, cert_enc_ctx);
 
-    WriteIoBufToFile(cert_plaintext, "cert_plaintext");
-
     CertificationHeader ch = CertificationHeader_read(cert_plaintext);
     CertificationHeader_print(&ch);
 
@@ -301,7 +348,14 @@ int main() {
             IoBuf_copy_size(segment_plaintext, file_buf, schs[i].segment_size);
         }
 
-        WriteIoBufToFile(segment_plaintext, file_name);
+        if (schs[i].comp_algorithm == 2) {
+            IoBuf *decompressed = IoBuf_ctor(schs[i].segment_size, Big, Writer);
+            DecompressToIoBuf(segment_plaintext, decompressed);
+            WriteIoBufToFile(decompressed, file_name);
+            IoBuf_dtor(decompressed);
+        } else if (schs[i].comp_algorithm == 1) {
+            WriteIoBufToFile(segment_plaintext, file_name);
+        }
 
         IoBuf_dtor(segment_plaintext); // ew
     }

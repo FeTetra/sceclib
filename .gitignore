@@ -1,6 +1,10 @@
 # IDE
 compile_commands.json
 .cache
+.vscode
+
+# Output junk
+schs*
 
 # SCE Files
 *.BIN
