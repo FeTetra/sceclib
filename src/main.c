@@ -238,21 +238,10 @@ CertificationAttributeHeader CertificationAttributeHeader_read(IoBuf *r, Segment
     return result;
 }
 
-int WriteIoBufToFile(IoBuf *r, char *file_name) {
-    FILE *fp = fopen(file_name, "wb");
-    if (fp == NULL) {
-        printf("Failed to open file\n");
-        return 0;
-    }
-
+int AppendIoBufToFile(IoBuf *r, FILE *fp) {
     size_t written = fwrite(r->buf->data, 1, r->buf->size, fp);
     if (written != r->buf->size) {
         printf("Size written did not match buffer size\n");
-        return 0;
-    }
-
-    if (fclose(fp) != 0) {
-        printf("Failed to close file\n");
         return 0;
     }
 
@@ -322,19 +311,20 @@ int main() {
     
     printf("\n_________\n\n Certification Segments \n_________\n\n");
 
-    // TODO: Decrypt and/or decompress all certification segments
-
     u8 attribute_key[0x10];
     u8 attribute_iv[0x10];
     size_t certification_attributes_offset = 0x170;
+
+    fp = fopen("EBOOT.ELF", "wb");
+    if (fp == NULL) {
+        printf("Failed to open output file\n");
+        return 0;
+    }
     
     for (int i = 0; i < ch.cert_entry_num; i++) {
         IoBuf *segment_plaintext = IoBuf_ctor(schs[i].segment_size, Big, Writer);
 
         IoBuf_seek_to(file_buf, schs[i].segment_offset);
-
-        char file_name[0x10];
-        snprintf(file_name, 0x10, "schs[%d]", i);
 
         if (schs[i].enc_algorithm == 3) {
             IoBuf_seek_to(cert_plaintext, certification_attributes_offset + (0x10 * schs[i].key_idx));
@@ -351,13 +341,18 @@ int main() {
         if (schs[i].comp_algorithm == 2) {
             IoBuf *decompressed = IoBuf_ctor(schs[i].segment_size, Big, Writer);
             DecompressToIoBuf(segment_plaintext, decompressed);
-            WriteIoBufToFile(decompressed, file_name);
+            AppendIoBufToFile(decompressed, fp);
             IoBuf_dtor(decompressed);
         } else if (schs[i].comp_algorithm == 1) {
-            WriteIoBufToFile(segment_plaintext, file_name);
+            AppendIoBufToFile(segment_plaintext, fp);
         }
 
         IoBuf_dtor(segment_plaintext); // ew
+    }
+
+    if (fclose(fp) != 0) {
+        printf("Failed to close output file\n");
+        return 0;
     }
 
     IoBuf_dtor(cert_plaintext);

@@ -3,8 +3,8 @@ compile_commands.json
 .cache
 .vscode
 
-# Output junk
-schs*
+# Output
+*.ELF
 
 # SCE Files
 *.BIN
