@@ -3,11 +3,9 @@ compile_commands.json
 .cache
 .vscode
 
-# Output
-*.ELF
-
 # SCE Files
 *.BIN
+*.ELF
 
 # scetool Files
 scetool

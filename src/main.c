@@ -11,6 +11,7 @@
 #include "buffer/io_buf.h"
 #include "buffer/endian.h"
 
+#include "elf/elf_header.h"
 #include "global_defs.h"
 #include "scetypes.h"
 
@@ -248,7 +249,7 @@ int AppendIoBufToFile(IoBuf *r, FILE *fp) {
     return 1;
 }
 
-int main() {
+int TestUnself() {
     FILE *fp = fopen("EBOOT.BIN", "rb");
     
     if (fp == NULL) {
@@ -358,4 +359,27 @@ int main() {
     IoBuf_dtor(cert_plaintext);
 
     free(schs);
+
+    return 0;
+}
+
+int main() {
+    FILE *fp = fopen("EBOOT.ELF", "rb");
+    
+    if (fp == NULL) {
+        printf("Failed to open file.\n");
+        exit(EXIT_FAILURE);
+    }
+
+    fseek(fp, 0, SEEK_END);
+    size_t input_size = ftell(fp);
+    fseek(fp, 0, SEEK_SET);
+
+    IoBuf *file_buf = IoBuf_ctor(input_size, Big, Reader);
+
+    fread(file_buf->buf->data, 1, input_size, fp);
+    fclose(fp);
+
+    Elf64_Ehdr ehdr = Elf64_Ehdr_read(file_buf);
+    printf("ph offset: %ld\n", ehdr.e_phoff);
 }
